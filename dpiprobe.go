@@ -173,11 +173,12 @@ func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAd
 	}
 
 	localInterfaceIp := initialConn.LocalAddr().(*net.UDPAddr).IP
+	_ = initialConn.Close()
+
 	outgoingPcapInterfaceName, err := FindPcapInterfaceName(localInterfaceIp)
 	if err != nil {
 		return "", nil, err
 	}
-	_ = initialConn.Close()
 
 	_, localNet, _ := net.ParseCIDR("127.0.0.0/8")
 	if localNet.Contains(localInterfaceIp) {
