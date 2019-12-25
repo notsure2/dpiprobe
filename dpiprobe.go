@@ -266,9 +266,6 @@ func runHttpGetTrace(
 				Window:  255,
 				ACK:     true,
 				PSH:     true,
-				BaseLayer: layers.BaseLayer{
-					Payload: []byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n", domain)),
-				},
 			}
 			_ = transportLayer.SetNetworkLayerForChecksum(networkLayer)
 			err := gopacket.SerializeLayers(
@@ -276,7 +273,8 @@ func runHttpGetTrace(
 				opts,
 				linkLayer,
 				networkLayer,
-				transportLayer)
+				transportLayer,
+				gopacket.Payload([]byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n", domain))))
 			if err != nil {
 				return err
 			}
@@ -399,7 +397,7 @@ func runTrace(
 			}
 
 			if tcpPacket != nil {
-				if tcpPacket.Seq == firstAckSeqNumber && !tcpPacket.FIN {
+				if tcpPacket.Seq == firstAckSeqNumber && !tcpPacket.FIN && !tcpPacket.RST {
 					continue
 				}
 
@@ -409,6 +407,8 @@ func runTrace(
 						tcpFlag = "SYN-ACK"
 					} else if tcpPacket.FIN {
 						tcpFlag = "FIN-ACK"
+					} else if tcpPacket.RST {
+						tcpFlag = "RST-ACK"
 					} else {
 						tcpFlag = "ACK"
 					}
