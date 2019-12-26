@@ -352,7 +352,7 @@ func runTrace(
 	disableIpPtrLookup bool,
 	timeoutSeconds uint) error {
 
-	for ttl := uint8(1); ttl < maxTtl; ttl++ {
+	for ttl := uint8(1); ttl <= maxTtl; ttl++ {
 		fmt.Printf("%d. ", ttl)
 
 		if err := sendProbeFunc(livePacketSource.PcapHandle, ttl); err != nil {
