@@ -258,20 +258,15 @@ func runHttpGetTrace(
 	return runTrace(
 		tcpAckNumber,
 		func(handle *pcap.Handle, ttl uint8) error {
-			buffer := gopacket.NewSerializeBuffer()
-			opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-
-			packetLayers := make([]gopacket.SerializableLayer, 0, 3)
+			var linkLayer *layers.Ethernet = nil
 			if sourceMac != nil && targetMac != nil {
-				linkLayer := &layers.Ethernet{
+				linkLayer = &layers.Ethernet{
 					SrcMAC:       *sourceMac,
 					DstMAC:       *targetMac,
 					EthernetType: layers.EthernetTypeIPv4,
 				}
-				packetLayers = append(packetLayers, linkLayer)
 			}
-
-			networkLayer := &layers.IPv4{
+			networkLayer := layers.IPv4{
 				Version:  4,
 				Id:       uint16(rand.Uint32()),
 				Flags:    layers.IPv4DontFragment,
@@ -280,9 +275,7 @@ func runHttpGetTrace(
 				SrcIP:    sourceIp.IP,
 				DstIP:    targetIp.IP,
 			}
-			packetLayers = append(packetLayers, networkLayer)
-
-			transportLayer := &layers.TCP{
+			transportLayer := layers.TCP{
 				SrcPort: sourcePort,
 				DstPort: layers.TCPPort(80),
 				Seq:     tcpSeqNumber,
@@ -291,16 +284,8 @@ func runHttpGetTrace(
 				ACK:     true,
 				PSH:     true,
 			}
-			_ = transportLayer.SetNetworkLayerForChecksum(networkLayer)
-			packetLayers = append(packetLayers, transportLayer)
-			packetLayers = append(
-				packetLayers,
-				gopacket.Payload([]byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n", domain))))
-
-			if err := gopacket.SerializeLayers(buffer, opts, packetLayers...); err != nil {
-				return err
-			}
-			if err := handle.WritePacketData(buffer.Bytes()); err != nil {
+			tcpPayload := []byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n", domain))
+			if err := sendRawPacket(handle, linkLayer, networkLayer, transportLayer, tcpPayload); err != nil {
 				return err
 			}
 			return nil
@@ -323,20 +308,15 @@ func runTcpSynTrace(
 	return runTrace(
 		0,
 		func(handle *pcap.Handle, ttl uint8) error {
-			buffer := gopacket.NewSerializeBuffer()
-			opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-
-			packetLayers := make([]gopacket.SerializableLayer, 0, 3)
+			var linkLayer *layers.Ethernet = nil
 			if sourceMac != nil && targetMac != nil {
-				linkLayer := &layers.Ethernet{
+				linkLayer = &layers.Ethernet{
 					SrcMAC:       *sourceMac,
 					DstMAC:       *targetMac,
 					EthernetType: layers.EthernetTypeIPv4,
 				}
-				packetLayers = append(packetLayers, linkLayer)
 			}
-
-			networkLayer := &layers.IPv4{
+			networkLayer := layers.IPv4{
 				Version:  4,
 				Id:       uint16(rand.Uint32()),
 				Flags:    layers.IPv4DontFragment,
@@ -345,9 +325,7 @@ func runTcpSynTrace(
 				SrcIP:    sourceIp.IP,
 				DstIP:    targetIp.IP,
 			}
-			packetLayers = append(packetLayers, networkLayer)
-
-			transportLayer := &layers.TCP{
+			transportLayer := layers.TCP{
 				SrcPort: layers.TCPPort(uint16(rand.Uint32())),
 				DstPort: layers.TCPPort(80),
 				Seq:     rand.Uint32(),
@@ -355,13 +333,7 @@ func runTcpSynTrace(
 				Window:  uint16(uint8(rand.Uint32())),
 				SYN:     true,
 			}
-			_ = transportLayer.SetNetworkLayerForChecksum(networkLayer)
-			packetLayers = append(packetLayers, transportLayer)
-
-			if err := gopacket.SerializeLayers(buffer, opts, packetLayers...); err != nil {
-				return err
-			}
-			if err := handle.WritePacketData(buffer.Bytes()); err != nil {
+			if err := sendRawPacket(handle, linkLayer, networkLayer, transportLayer, []byte{}); err != nil {
 				return err
 			}
 			return nil
@@ -461,6 +433,51 @@ func runTrace(
 		if breakOuter {
 			break
 		}
+	}
+
+	return nil
+}
+
+func sendRawPacket(
+	pcapHandle *pcap.Handle,
+	linkLayer gopacket.SerializableLayer,
+	networkLayer layers.IPv4,
+	transportLayer layers.TCP,
+	tcpPayload []byte) error {
+
+	buffer := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+
+	if linkLayer != nil {
+		if err := transportLayer.SetNetworkLayerForChecksum(&networkLayer); err != nil {
+			return err
+		}
+		if err := gopacket.SerializeLayers(
+			buffer,
+			opts,
+			linkLayer,
+			&networkLayer,
+			&transportLayer,
+			gopacket.Payload(tcpPayload)); err != nil {
+			return err
+		}
+		if err := pcapHandle.WritePacketData(buffer.Bytes()); err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String())
+	if err != nil {
+		return err
+	}
+	opts.ComputeChecksums = false
+	if err := gopacket.SerializeLayers(buffer, opts, &transportLayer, gopacket.Payload(tcpPayload)); err != nil {
+		return err
+	}
+	if _, err = conn.Write(buffer.Bytes()); err != nil {
+		return err
 	}
 
 	return nil
