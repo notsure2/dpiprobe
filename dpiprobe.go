@@ -94,7 +94,22 @@ func main() {
 		os.Exit(4)
 	}
 
-	firstEthernetPacket := firstFrame.LinkLayer().(*layers.Ethernet)
+	var firstSourceMac *net.HardwareAddr
+	var firstTargetMac *net.HardwareAddr
+
+	firstEthernetPacket, _ := firstFrame.LinkLayer().(*layers.Ethernet)
+	firstLinuxSllPacket, _ := firstFrame.LinkLayer().(*layers.LinuxSLL)
+
+	if firstEthernetPacket != nil {
+		firstSourceMac = &firstEthernetPacket.SrcMAC
+		firstTargetMac = &firstEthernetPacket.DstMAC
+	} else if firstLinuxSllPacket != nil {
+		// Do nothing
+	} else {
+		fmt.Printf("Unsupported link-layer type: %T\n", firstFrame.LinkLayer())
+		os.Exit(3)
+	}
+
 	firstIpPacket := firstFrame.NetworkLayer().(*layers.IPv4)
 	firstAckTcpPacket, _ = firstFrame.Layer(layers.LayerTypeTCP).(*layers.TCP)
 	firstIcmpPacket, _ := firstFrame.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
@@ -131,9 +146,9 @@ func main() {
 		defer livePacketSource.Close()
 
 		err = runTcpSynTrace(
-			firstEthernetPacket.DstMAC,
+			firstTargetMac,
 			outgoingIp,
-			firstEthernetPacket.SrcMAC,
+			firstSourceMac,
 			targetIp,
 			livePacketSource,
 			maxTtlByte,
@@ -142,9 +157,9 @@ func main() {
 	} else if doDpiTrace {
 		fmt.Printf("* TCP connection established. Performing HTTP GET traceroute.\n")
 		err = runHttpGetTrace(
-			firstEthernetPacket.DstMAC,
+			firstTargetMac,
 			outgoingIp,
-			firstEthernetPacket.SrcMAC,
+			firstSourceMac,
 			targetIp,
 			encodedDomain,
 			firstAckTcpPacket.DstPort,
@@ -227,9 +242,9 @@ func (p *LivePacketSource) Close() {
 }
 
 func runHttpGetTrace(
-	sourceMac net.HardwareAddr,
+	sourceMac *net.HardwareAddr,
 	sourceIp *net.IPAddr,
-	targetMac net.HardwareAddr,
+	targetMac *net.HardwareAddr,
 	targetIp *net.IPAddr,
 	domain string,
 	sourcePort layers.TCPPort,
@@ -245,11 +260,17 @@ func runHttpGetTrace(
 		func(handle *pcap.Handle, ttl uint8) error {
 			buffer := gopacket.NewSerializeBuffer()
 			opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-			linkLayer := &layers.Ethernet{
-				SrcMAC:       sourceMac,
-				DstMAC:       targetMac,
-				EthernetType: layers.EthernetTypeIPv4,
+
+			packetLayers := make([]gopacket.SerializableLayer, 0, 3)
+			if sourceMac != nil && targetMac != nil {
+				linkLayer := &layers.Ethernet{
+					SrcMAC:       *sourceMac,
+					DstMAC:       *targetMac,
+					EthernetType: layers.EthernetTypeIPv4,
+				}
+				packetLayers = append(packetLayers, linkLayer)
 			}
+
 			networkLayer := &layers.IPv4{
 				Version:  4,
 				Id:       uint16(rand.Uint32()),
@@ -259,6 +280,8 @@ func runHttpGetTrace(
 				SrcIP:    sourceIp.IP,
 				DstIP:    targetIp.IP,
 			}
+			packetLayers = append(packetLayers, networkLayer)
+
 			transportLayer := &layers.TCP{
 				SrcPort: sourcePort,
 				DstPort: layers.TCPPort(80),
@@ -269,14 +292,12 @@ func runHttpGetTrace(
 				PSH:     true,
 			}
 			_ = transportLayer.SetNetworkLayerForChecksum(networkLayer)
-			err := gopacket.SerializeLayers(
-				buffer,
-				opts,
-				linkLayer,
-				networkLayer,
-				transportLayer,
+			packetLayers = append(packetLayers, transportLayer)
+			packetLayers = append(
+				packetLayers,
 				gopacket.Payload([]byte(fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\n", domain))))
-			if err != nil {
+
+			if err := gopacket.SerializeLayers(buffer, opts, packetLayers...); err != nil {
 				return err
 			}
 			if err := handle.WritePacketData(buffer.Bytes()); err != nil {
@@ -291,9 +312,9 @@ func runHttpGetTrace(
 }
 
 func runTcpSynTrace(
-	sourceMac net.HardwareAddr,
+	sourceMac *net.HardwareAddr,
 	sourceIp *net.IPAddr,
-	targetMac net.HardwareAddr,
+	targetMac *net.HardwareAddr,
 	targetIp *net.IPAddr,
 	livePacketSource *LivePacketSource,
 	maxTtl uint8,
@@ -304,11 +325,17 @@ func runTcpSynTrace(
 		func(handle *pcap.Handle, ttl uint8) error {
 			buffer := gopacket.NewSerializeBuffer()
 			opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-			linkLayer := &layers.Ethernet{
-				SrcMAC:       sourceMac,
-				DstMAC:       targetMac,
-				EthernetType: layers.EthernetTypeIPv4,
+
+			packetLayers := make([]gopacket.SerializableLayer, 0, 3)
+			if sourceMac != nil && targetMac != nil {
+				linkLayer := &layers.Ethernet{
+					SrcMAC:       *sourceMac,
+					DstMAC:       *targetMac,
+					EthernetType: layers.EthernetTypeIPv4,
+				}
+				packetLayers = append(packetLayers, linkLayer)
 			}
+
 			networkLayer := &layers.IPv4{
 				Version:  4,
 				Id:       uint16(rand.Uint32()),
@@ -318,6 +345,8 @@ func runTcpSynTrace(
 				SrcIP:    sourceIp.IP,
 				DstIP:    targetIp.IP,
 			}
+			packetLayers = append(packetLayers, networkLayer)
+
 			transportLayer := &layers.TCP{
 				SrcPort: layers.TCPPort(uint16(rand.Uint32())),
 				DstPort: layers.TCPPort(80),
@@ -327,13 +356,9 @@ func runTcpSynTrace(
 				SYN:     true,
 			}
 			_ = transportLayer.SetNetworkLayerForChecksum(networkLayer)
-			err := gopacket.SerializeLayers(
-				buffer,
-				opts,
-				linkLayer,
-				networkLayer,
-				transportLayer)
-			if err != nil {
+			packetLayers = append(packetLayers, transportLayer)
+
+			if err := gopacket.SerializeLayers(buffer, opts, packetLayers...); err != nil {
 				return err
 			}
 			if err := handle.WritePacketData(buffer.Bytes()); err != nil {
