@@ -178,7 +178,7 @@ func main() {
 		os.Exit(6)
 	}
 
-	fmt.Printf("* Probe complete.")
+	fmt.Printf("* Probe complete.\n")
 }
 
 func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAddr, error) {
