@@ -9,6 +9,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"golang.org/x/net/idna"
+	"golang.org/x/net/ipv4"
 	"math/big"
 	"math/rand"
 	"net"
@@ -471,6 +472,10 @@ func sendRawPacket(
 
 	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String())
 	if err != nil {
+		return err
+	}
+	ipConn := ipv4.NewConn(conn)
+	if err := ipConn.SetTTL(int(networkLayer.TTL)); err != nil {
 		return err
 	}
 	if err := gopacket.SerializeLayers(buffer, opts, &transportLayer, gopacket.Payload(tcpPayload)); err != nil {
