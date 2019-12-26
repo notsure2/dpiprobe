@@ -280,7 +280,7 @@ func runHttpGetTrace(
 				DstPort: layers.TCPPort(80),
 				Seq:     tcpSeqNumber,
 				Ack:     tcpAckNumber,
-				Window:  255,
+				Window:  1450,
 				ACK:     true,
 				PSH:     true,
 			}
@@ -330,7 +330,7 @@ func runTcpSynTrace(
 				DstPort: layers.TCPPort(80),
 				Seq:     rand.Uint32(),
 				Ack:     0,
-				Window:  uint16(uint8(rand.Uint32())),
+				Window:  1450,
 				SYN:     true,
 			}
 			if err := sendRawPacket(handle, linkLayer, networkLayer, transportLayer, []byte{}); err != nil {
