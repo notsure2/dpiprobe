@@ -448,10 +448,11 @@ func sendRawPacket(
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
+	if err := transportLayer.SetNetworkLayerForChecksum(&networkLayer); err != nil {
+		return err
+	}
+
 	if linkLayer != nil {
-		if err := transportLayer.SetNetworkLayerForChecksum(&networkLayer); err != nil {
-			return err
-		}
 		if err := gopacket.SerializeLayers(
 			buffer,
 			opts,
@@ -472,7 +473,6 @@ func sendRawPacket(
 	if err != nil {
 		return err
 	}
-	opts.ComputeChecksums = false
 	if err := gopacket.SerializeLayers(buffer, opts, &transportLayer, gopacket.Payload(tcpPayload)); err != nil {
 		return err
 	}
