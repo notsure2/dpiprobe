@@ -258,7 +258,7 @@ func runHttpGetTrace(
 	return runTrace(
 		tcpAckNumber,
 		func(handle *pcap.Handle, ttl uint8) error {
-			var linkLayer *layers.Ethernet = nil
+			var linkLayer gopacket.SerializableLayer = nil
 			if sourceMac != nil && targetMac != nil {
 				linkLayer = &layers.Ethernet{
 					SrcMAC:       *sourceMac,
@@ -308,7 +308,7 @@ func runTcpSynTrace(
 	return runTrace(
 		0,
 		func(handle *pcap.Handle, ttl uint8) error {
-			var linkLayer *layers.Ethernet = nil
+			var linkLayer gopacket.SerializableLayer = nil
 			if sourceMac != nil && targetMac != nil {
 				linkLayer = &layers.Ethernet{
 					SrcMAC:       *sourceMac,
@@ -448,7 +448,6 @@ func sendRawPacket(
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	fmt.Printf("%s", linkLayer)
 	if linkLayer != nil {
 		if err := transportLayer.SetNetworkLayerForChecksum(&networkLayer); err != nil {
 			return err
