@@ -75,8 +75,7 @@ func main() {
 
 	var targetConn net.Conn = nil
 
-	var doDpiTrace = true
-	var firstFrame gopacket.Packet
+	var frame gopacket.Packet
 	var firstIpPacket *layers.IPv4
 	var firstAckTcpPacket *layers.TCP
 	var firstIcmpPacket *layers.ICMPv4
@@ -89,79 +88,95 @@ func main() {
 	}
 	if err == nil {
 		defer func() { _ = targetConn.Close() }()
+	}
+
+	select {
+	case frame = <-livePacketSource.PacketChan:
+		break
+	case <-time.After(time.Second * 5):
+		fmt.Printf("Timed out waiting to read the first SYN packet.\n")
+		os.Exit(4)
+	}
+
+	firstEthernetPacket, _ := frame.LinkLayer().(*layers.Ethernet)
+	firstLinuxSllPacket, _ := frame.LinkLayer().(*layers.LinuxSLL)
+
+	if firstEthernetPacket != nil {
+		firstSourceMac = &firstEthernetPacket.SrcMAC
+		firstTargetMac = &firstEthernetPacket.DstMAC
+	} else if firstLinuxSllPacket != nil {
+		// Do nothing
+	} else {
+		fmt.Printf("Unsupported link-layer type: %T\n", frame.LinkLayer())
+		os.Exit(3)
+	}
+
+	if targetConn != nil {
 		select {
-		case firstFrame = <-livePacketSource.PacketChan:
+		case frame = <-livePacketSource.PacketChan:
 			break
 		case <-time.After(time.Second * 5):
-			fmt.Printf("Timed out waiting to receive first ACK packet. A firewall" +
-				" is blocking the connection or connectivity has been lost. Try normal traceroute or tcp traceroute.\n")
+			fmt.Printf("Timed out waiting to receive the first SYN-ACK packet.\n")
 			os.Exit(4)
 		}
 
-		firstEthernetPacket, _ := firstFrame.LinkLayer().(*layers.Ethernet)
-		firstLinuxSllPacket, _ := firstFrame.LinkLayer().(*layers.LinuxSLL)
+		firstIpPacket = frame.NetworkLayer().(*layers.IPv4)
+		firstAckTcpPacket, _ = frame.Layer(layers.LayerTypeTCP).(*layers.TCP)
+		firstIcmpPacket, _ = frame.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
 
-		if firstEthernetPacket != nil {
-			firstSourceMac = &firstEthernetPacket.SrcMAC
-			firstTargetMac = &firstEthernetPacket.DstMAC
-		} else if firstLinuxSllPacket != nil {
-			// Do nothing
-		} else {
-			fmt.Printf("Unsupported link-layer type: %T\n", firstFrame.LinkLayer())
-			os.Exit(3)
+		if firstAckTcpPacket == nil {
+			if firstIpPacket != nil && firstIcmpPacket != nil {
+				fmt.Printf("* Received ICMP TTL exceeded from %s.\n", firstIpPacket.SrcIP.String())
+			} else if frame != nil {
+				fmt.Printf("* Received unexpected packet: %s\n", frame.TransportLayer())
+				os.Exit(5)
+			}
+		} else if firstAckTcpPacket.RST {
+			fmt.Printf("* Received TCP Reset.\n")
+			firstAckTcpPacket = nil
 		}
-
-		firstIpPacket = firstFrame.NetworkLayer().(*layers.IPv4)
-		firstAckTcpPacket, _ = firstFrame.Layer(layers.LayerTypeTCP).(*layers.TCP)
-		firstIcmpPacket, _ = firstFrame.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
 	}
 
-	if firstAckTcpPacket == nil {
-		if firstIpPacket != nil && firstIcmpPacket != nil {
-			fmt.Printf("* Received ICMP TTL exceeded from %s.\n", firstIpPacket.SrcIP.String())
-			doDpiTrace = false
-		} else if firstFrame != nil {
-			fmt.Printf("* Received unexpected packet: %s\n", firstFrame.TransportLayer())
-			os.Exit(5)
-		}
-	} else if firstAckTcpPacket.RST {
-		fmt.Printf("* Received TCP Reset.\n")
-		doDpiTrace = false
-	}
-
-	if *tcpSynTrace || !doDpiTrace || firstAckTcpPacket == nil {
+	if *tcpSynTrace || firstAckTcpPacket == nil {
 		if *tcpSynTrace {
 			fmt.Printf("* Performing TCP SYN traceroute.\n")
 		} else {
 			fmt.Printf("* TCP connection failed. Performing TCP SYN traceroute.\n")
 		}
 
-		livePacketSource.Close()
-		_ = targetConn.Close()
-		time.Sleep(5 * time.Second)
+		if targetConn != nil {
+			_ = targetConn.Close()
 
-		livePacketSource, err := startPacketCapture(outgoingPcapInterfaceName, targetIp)
-		if err != nil {
-			fmt.Printf("Failed to start packet capture on interface '%s': %s\n", outgoingPcapInterfaceName, err)
-			os.Exit(3)
+			select {
+			case frame = <-livePacketSource.PacketChan:
+				break
+			case <-time.After(time.Second * time.Duration(*timeoutSeconds)):
+				fmt.Printf("Timed out waiting to read FIN packet.\n")
+				os.Exit(4)
+			}
+
+			closingTcpPacket, _ := frame.Layer(layers.LayerTypeTCP).(*layers.TCP)
+			if !closingTcpPacket.FIN {
+				fmt.Printf("* Received unexpected packet: %s\n", frame.TransportLayer())
+				os.Exit(5)
+			}
 		}
-		defer livePacketSource.Close()
 
 		err = runTcpSynTrace(
-			firstTargetMac,
-			outgoingIp,
 			firstSourceMac,
+			outgoingIp,
+			firstTargetMac,
 			targetIp,
 			livePacketSource,
 			maxTtlByte,
 			*disableIpPtrLookup,
 			*timeoutSeconds)
-	} else if doDpiTrace {
+	} else {
 		fmt.Printf("* TCP connection established. Performing HTTP GET traceroute.\n")
 		err = runHttpGetTrace(
-			firstTargetMac,
-			outgoingIp,
 			firstSourceMac,
+			outgoingIp,
+			firstTargetMac,
 			targetIp,
 			encodedDomain,
 			firstAckTcpPacket.DstPort,
@@ -171,8 +186,6 @@ func main() {
 			maxTtlByte,
 			*disableIpPtrLookup,
 			*timeoutSeconds)
-	} else {
-		err = errors.New("unexpected logic condition - definitely a bug")
 	}
 
 	if err != nil {
@@ -219,10 +232,13 @@ func startPacketCapture(outgoingInterfaceName string, targetIp *net.IPAddr) (pca
 	targetIpHex := hex.EncodeToString(targetIpInt.Bytes())
 
 	captureFilter := fmt.Sprintf(
-		"(tcp and src %s and port 80 and (tcp[tcpflags] & (tcp-ack|tcp-rst|tcp-fin) != 0)) or"+
+		"(tcp and dst %s and dst port 80 and tcp[tcpflags] & tcp-syn == tcp-syn) ||"+
+			" (tcp and src %s and port 80 and (tcp[tcpflags] & (tcp-ack|tcp-rst|tcp-fin) != 0)) or"+
 			" (icmp[icmptype] == icmp-timxceed and icmp[17] == 6 and icmp[24:4] == 0x%s and icmp[30:2] == 80)",
 		targetIp.String(),
+		targetIp.String(),
 		targetIpHex)
+
 	if err := liveHandle.SetBPFFilter(captureFilter); err != nil {
 		liveHandle.Close()
 		return nil, err
@@ -384,6 +400,12 @@ func runTrace(
 				return errors.New(fmt.Sprintf("Unexpected packet: %s", frame))
 			}
 
+			if tcpPacket != nil &&
+				((tcpPacket.Seq == firstAckSeqNumber && !tcpPacket.FIN && !tcpPacket.RST) ||
+					(tcpPacket.SYN && !tcpPacket.ACK)) {
+				continue
+			}
+
 			var ipSourceDnsNameFragment = ""
 			if !disableIpPtrLookup {
 				ipSourceDnsNames, _ := net.LookupAddr(ipPacket.SrcIP.String())
@@ -397,10 +419,6 @@ func runTrace(
 			}
 
 			if tcpPacket != nil {
-				if tcpPacket.Seq == firstAckSeqNumber && !tcpPacket.FIN && !tcpPacket.RST {
-					continue
-				}
-
 				var tcpFlag = "(unexpected flag)"
 				if tcpPacket.ACK {
 					if tcpPacket.SYN {
