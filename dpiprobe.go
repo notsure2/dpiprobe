@@ -147,18 +147,19 @@ func main() {
 		if targetConn != nil {
 			_ = targetConn.Close()
 
-			select {
-			case frame = <-livePacketSource.PacketChan:
-				break
-			case <-time.After(time.Second * time.Duration(*timeoutSeconds)):
-				fmt.Printf("Timed out waiting to read FIN packet.\n")
-				os.Exit(4)
-			}
+			for {
+				select {
+				case frame = <-livePacketSource.PacketChan:
+					break
+				case <-time.After(time.Second * time.Duration(*timeoutSeconds)):
+					fmt.Printf("Timed out waiting to read FIN packet.\n")
+					os.Exit(4)
+				}
 
-			closingTcpPacket, _ := frame.Layer(layers.LayerTypeTCP).(*layers.TCP)
-			if !closingTcpPacket.FIN {
-				fmt.Printf("* Received unexpected packet: %s\n", frame.TransportLayer())
-				os.Exit(5)
+				tcpPacket, _ := frame.Layer(layers.LayerTypeTCP).(*layers.TCP)
+				if tcpPacket.FIN {
+					break
+				}
 			}
 		}
 
