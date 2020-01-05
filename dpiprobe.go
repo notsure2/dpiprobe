@@ -232,7 +232,7 @@ func startPacketCapture(outgoingInterfaceName string, targetIp *net.IPAddr) (pca
 	targetIpHex := hex.EncodeToString(targetIpInt.Bytes())
 
 	captureFilter := fmt.Sprintf(
-		"(tcp and dst %s and dst port 80 and tcp[tcpflags] & tcp-syn == tcp-syn) ||"+
+		"(tcp and dst %s and dst port 80 and tcp[tcpflags] & tcp-syn == tcp-syn) or"+
 			" (tcp and src %s and port 80 and (tcp[tcpflags] & (tcp-ack|tcp-rst|tcp-fin) != 0)) or"+
 			" (icmp[icmptype] == icmp-timxceed and icmp[17] == 6 and icmp[24:4] == 0x%s and icmp[30:2] == 80)",
 		targetIp.String(),
