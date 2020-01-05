@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	maxTtl := flag.Uint("ttl", 128, "Maximum number of hops.")
+	maxTtl := flag.Uint("ttl", 30, "Maximum number of hops.")
 	tcpSynTrace := flag.Bool("syn", false, "Force TCP SYN trace.")
 	disableIpPtrLookup := flag.Bool("n", false, "Disable IP PTR lookup.")
 	timeoutSeconds := flag.Uint("t", 15, "Timeout for each hop.")
@@ -77,49 +77,50 @@ func main() {
 
 	var doDpiTrace = true
 	var firstFrame gopacket.Packet
+	var firstIpPacket *layers.IPv4
 	var firstAckTcpPacket *layers.TCP
+	var firstIcmpPacket *layers.ICMPv4
+	var firstSourceMac *net.HardwareAddr
+	var firstTargetMac *net.HardwareAddr
 
 	targetConn, err = net.Dial("tcp", net.JoinHostPort(targetIp.String(), "80"))
 	if err != nil {
 		fmt.Printf("Failed to establish connection to %s: %s\n", domain, err)
-		os.Exit(3)
 	}
-	defer func() { _ = targetConn.Close() }()
+	if err == nil {
+		defer func() { _ = targetConn.Close() }()
+		select {
+		case firstFrame = <-livePacketSource.PacketChan:
+			break
+		case <-time.After(time.Second * 5):
+			fmt.Printf("Timed out waiting to receive first ACK packet. A firewall" +
+				" is blocking the connection or connectivity has been lost. Try normal traceroute or tcp traceroute.\n")
+			os.Exit(4)
+		}
 
-	select {
-	case firstFrame = <-livePacketSource.PacketChan:
-		break
-	case <-time.After(time.Second * 5):
-		fmt.Printf("Timed out waiting to receive first ACK packet. A firewall" +
-			" is blocking the connection or connectivity has been lost. Try normal traceroute or tcp traceroute.\n")
-		os.Exit(4)
+		firstEthernetPacket, _ := firstFrame.LinkLayer().(*layers.Ethernet)
+		firstLinuxSllPacket, _ := firstFrame.LinkLayer().(*layers.LinuxSLL)
+
+		if firstEthernetPacket != nil {
+			firstSourceMac = &firstEthernetPacket.SrcMAC
+			firstTargetMac = &firstEthernetPacket.DstMAC
+		} else if firstLinuxSllPacket != nil {
+			// Do nothing
+		} else {
+			fmt.Printf("Unsupported link-layer type: %T\n", firstFrame.LinkLayer())
+			os.Exit(3)
+		}
+
+		firstIpPacket = firstFrame.NetworkLayer().(*layers.IPv4)
+		firstAckTcpPacket, _ = firstFrame.Layer(layers.LayerTypeTCP).(*layers.TCP)
+		firstIcmpPacket, _ = firstFrame.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
 	}
-
-	var firstSourceMac *net.HardwareAddr
-	var firstTargetMac *net.HardwareAddr
-
-	firstEthernetPacket, _ := firstFrame.LinkLayer().(*layers.Ethernet)
-	firstLinuxSllPacket, _ := firstFrame.LinkLayer().(*layers.LinuxSLL)
-
-	if firstEthernetPacket != nil {
-		firstSourceMac = &firstEthernetPacket.SrcMAC
-		firstTargetMac = &firstEthernetPacket.DstMAC
-	} else if firstLinuxSllPacket != nil {
-		// Do nothing
-	} else {
-		fmt.Printf("Unsupported link-layer type: %T\n", firstFrame.LinkLayer())
-		os.Exit(3)
-	}
-
-	firstIpPacket := firstFrame.NetworkLayer().(*layers.IPv4)
-	firstAckTcpPacket, _ = firstFrame.Layer(layers.LayerTypeTCP).(*layers.TCP)
-	firstIcmpPacket, _ := firstFrame.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
 
 	if firstAckTcpPacket == nil {
-		if firstIcmpPacket != nil {
+		if firstIpPacket != nil && firstIcmpPacket != nil {
 			fmt.Printf("* Received ICMP TTL exceeded from %s.\n", firstIpPacket.SrcIP.String())
 			doDpiTrace = false
-		} else {
+		} else if firstFrame != nil {
 			fmt.Printf("* Received unexpected packet: %s\n", firstFrame.TransportLayer())
 			os.Exit(5)
 		}
