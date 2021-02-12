@@ -198,7 +198,7 @@ func main() {
 }
 
 func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAddr, error) {
-	initialConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: targetIp.IP})
+	initialConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: targetIp.IP, Port: 80})
 	if err != nil {
 		return "", nil, err
 	}
