@@ -210,6 +210,10 @@ func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAd
 	if err != nil {
 		return "", nil, err
 	}
+	if outgoingPcapInterfaceName == "" {
+		return "", nil, errors.New(
+			fmt.Sprintf("Unable to lookup the outgoing interface for local IP: %s", localInterfaceIp))
+	}
 
 	_, localNet, _ := net.ParseCIDR("127.0.0.0/8")
 	if localNet.Contains(localInterfaceIp) {
