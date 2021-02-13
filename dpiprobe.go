@@ -439,7 +439,7 @@ func runTrace(
 					tcpFlag = "RST"
 				}
 
-				fmt.Printf("%s %s[TCP %s] %s \n", ipPacket.SrcIP, ipSourceDnsNameFragment, tcpFlag, elapsedTime)
+				fmt.Printf("%s %s[TCP %s] %s\n", ipPacket.SrcIP, ipSourceDnsNameFragment, tcpFlag, elapsedTime)
 
 				if tcpPacket.FIN {
 					return errors.New("remote peer actively closed the connection")
@@ -450,7 +450,7 @@ func runTrace(
 			}
 
 			if icmpPacket != nil {
-				fmt.Printf("%s %s %s \n", ipPacket.SrcIP, ipSourceDnsNameFragment, elapsedTime)
+				fmt.Printf("%s %s%s\n", ipPacket.SrcIP, ipSourceDnsNameFragment, elapsedTime)
 				break
 			}
 		}
