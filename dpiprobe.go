@@ -374,6 +374,8 @@ func runTrace(
 	for ttl := uint8(1); ttl <= maxTtl; ttl++ {
 		fmt.Printf("%d. ", ttl)
 
+		var start = time.Now()
+
 		if err := sendProbeFunc(livePacketSource.PcapHandle, ttl); err != nil {
 			return err
 		}
@@ -388,6 +390,8 @@ func runTrace(
 				fmt.Printf("*\n")
 				break
 			}
+
+			var elapsedTime = time.Since(start)
 
 			if frame == nil {
 				break
@@ -435,7 +439,7 @@ func runTrace(
 					tcpFlag = "RST"
 				}
 
-				fmt.Printf("%s %s[TCP %s]\n", ipPacket.SrcIP, ipSourceDnsNameFragment, tcpFlag)
+				fmt.Printf("%s %s[TCP %s] %s \n", ipPacket.SrcIP, ipSourceDnsNameFragment, tcpFlag, elapsedTime)
 
 				if tcpPacket.FIN {
 					return errors.New("remote peer actively closed the connection")
@@ -446,7 +450,7 @@ func runTrace(
 			}
 
 			if icmpPacket != nil {
-				fmt.Printf("%s %s\n", ipPacket.SrcIP, ipSourceDnsNameFragment)
+				fmt.Printf("%s %s %s \n", ipPacket.SrcIP, ipSourceDnsNameFragment, elapsedTime)
 				break
 			}
 		}
