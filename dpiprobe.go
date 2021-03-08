@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,10 +30,14 @@ func main() {
 	flag.Parse()
 
 	switch *connectionMode {
-	case "http", "syn": 		
-		if *port == 0 { *port = 80 }
-	case "https": 
-		if *port == 0 { *port = 443 }
+	case "http", "syn":
+		if *port == 0 {
+			*port = 80
+		}
+	case "https":
+		if *port == 0 {
+			*port = 443
+		}
 	default:
 		fmt.Printf("Invalid mode: (%s) \nUsage: dpiprobe --mode (http or https or syn) \n", *connectionMode)
 		os.Exit(1)
@@ -170,7 +174,7 @@ func main() {
 			int(*port))
 	case "https":
 		fmt.Println("Running in HTTPS ClientHello mode")
-		// use uTLS library to create a google chrome fingerprinted clienthello using empty connection
+		// use uTLS library to create a google chrome fingerprinted ClientHello using empty connection
 		var conn net.Conn = nil
 		uTLSConn := tls.UClient(conn, &tls.Config{ServerName: domain}, tls.HelloChrome_Auto)
 		var err = uTLSConn.BuildHandshakeState()
@@ -181,17 +185,15 @@ func main() {
 		var recordHeader = []byte{0x16, 0x03, 0x01}
 		var recordHeaderBytes = make([]byte, 2)
 		var clientHelloUInt16 = uint16(len(rawClientHello))
-		binary.BigEndian.PutUint16(recordHeaderBytes, clientHelloUInt16) 
+		binary.BigEndian.PutUint16(recordHeaderBytes, clientHelloUInt16)
 		var fullClientHello = append(recordHeader, recordHeaderBytes...)
-		fullClientHello = append(fullClientHello, rawClientHello...) // append record header + clienthello size to payload
+		fullClientHello = append(fullClientHello, rawClientHello...) // append record header + ClientHello size to payload
 
-		fmt.Printf("* TCP connection established. Performing HTTP GET traceroute.\n")
-		err = runClientHellotrace(
+		err = runClientHelloTrace(
 			firstSourceMac,
 			outgoingIp,
 			firstTargetMac,
 			targetIp,
-			encodedDomain,
 			firstAckTcpPacket.DstPort,
 			firstAckTcpPacket.Ack,
 			firstAckTcpPacket.Seq+1,
@@ -201,7 +203,7 @@ func main() {
 			*timeoutSeconds,
 			fullClientHello,
 			int(*port))
-	case "syn": 
+	case "syn":
 		fmt.Println("Running in TCP syn mode")
 		if targetConn != nil {
 			_ = targetConn.Close()
@@ -339,12 +341,11 @@ func runHttpGetTrace(
 		timeoutSeconds)
 }
 
-func runClientHellotrace(
+func runClientHelloTrace(
 	sourceMac *net.HardwareAddr,
 	sourceIp *net.IPAddr,
 	targetMac *net.HardwareAddr,
 	targetIp *net.IPAddr,
-	domain string,
 	sourcePort layers.TCPPort,
 	tcpSeqNumber uint32,
 	tcpAckNumber uint32,
@@ -575,7 +576,7 @@ func sendRawPacket(
 		return nil
 	}
 
-	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String()+fmt.Sprintf("%d", transportLayer.DstPort))
+	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String()+":"+fmt.Sprintf("%d", transportLayer.DstPort))
 	if err != nil {
 		return err
 	}
