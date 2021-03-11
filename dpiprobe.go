@@ -39,8 +39,17 @@ func main() {
 			*port = 443
 		}
 	default:
-		fmt.Printf("Invalid mode (%s) \nRun \"dpiprobe --help\" for usage instructions.\n", *connectionMode)
-		os.Exit(1)
+		switch *port {
+		case 80:
+			*connectionMode = "http"
+		case 443:
+			*connectionMode = "https"
+		case 0:
+			*port = 80
+			*connectionMode = "http"
+		default:
+			*connectionMode = "syn"
+		}
 	}
 
 	domain := flag.Arg(0)
