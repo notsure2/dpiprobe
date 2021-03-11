@@ -1,29 +1,56 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
-	"golang.org/x/net/idna"
-	"golang.org/x/net/ipv4"
 	"math/big"
 	"math/rand"
 	"net"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
+	"github.com/refraction-networking/utls"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/ipv4"
 )
 
 func main() {
 	maxTtl := flag.Uint("ttl", 30, "Maximum number of hops.")
-	tcpSynTrace := flag.Bool("syn", false, "Force TCP SYN trace.")
+	connectionMode := flag.String("mode", "", "Connection mode: (syn|http|https).")
 	disableIpPtrLookup := flag.Bool("n", false, "Disable IP PTR lookup.")
 	timeoutSeconds := flag.Uint("t", 15, "Timeout for each hop.")
+	port := flag.Uint("port", 0, "Port number.")
 	flag.Parse()
+
+	switch *connectionMode {
+	case "http", "syn":
+		if *port == 0 {
+			*port = 80
+		}
+	case "https":
+		if *port == 0 {
+			*port = 443
+		}
+	default:
+		switch *port {
+		case 80:
+			*connectionMode = "http"
+		case 443:
+			*connectionMode = "https"
+		case 0:
+			*port = 80
+			*connectionMode = "http"
+		default:
+			*connectionMode = "syn"
+		}
+	}
 
 	domain := flag.Arg(0)
 	if domain == "" {
@@ -66,7 +93,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	livePacketSource, err := startPacketCapture(outgoingPcapInterfaceName, targetIp)
+	livePacketSource, err := startPacketCapture(outgoingPcapInterfaceName, targetIp, *port)
 	if err != nil {
 		fmt.Printf("Failed to start packet capture on interface '%s': %s\n", outgoingPcapInterfaceName, err)
 		os.Exit(3)
@@ -82,7 +109,7 @@ func main() {
 	var firstSourceMac *net.HardwareAddr
 	var firstTargetMac *net.HardwareAddr
 
-	targetConn, err = net.Dial("tcp", net.JoinHostPort(targetIp.String(), "80"))
+	targetConn, err = net.Dial("tcp", net.JoinHostPort(targetIp.String(), fmt.Sprintf("%d", *port)))
 	if err != nil {
 		fmt.Printf("Failed to establish connection to %s: %s\n", domain, err)
 	}
@@ -137,13 +164,56 @@ func main() {
 		}
 	}
 
-	if *tcpSynTrace || firstAckTcpPacket == nil {
-		if *tcpSynTrace {
-			fmt.Printf("* Performing TCP SYN traceroute.\n")
-		} else {
-			fmt.Printf("* TCP connection failed. Performing TCP SYN traceroute.\n")
+	switch *connectionMode {
+	case "http":
+		fmt.Println("Running in HTTP mode")
+		err = runHttpGetTrace(
+			firstSourceMac,
+			outgoingIp,
+			firstTargetMac,
+			targetIp,
+			encodedDomain,
+			firstAckTcpPacket.DstPort,
+			firstAckTcpPacket.Ack,
+			firstAckTcpPacket.Seq+1,
+			livePacketSource,
+			maxTtlByte,
+			*disableIpPtrLookup,
+			*timeoutSeconds,
+			int(*port))
+	case "https":
+		fmt.Println("Running in HTTPS ClientHello mode")
+		// use uTLS library to create a google chrome fingerprinted ClientHello using empty connection
+		var conn net.Conn = nil
+		uTLSConn := tls.UClient(conn, &tls.Config{ServerName: domain}, tls.HelloChrome_Auto)
+		var err = uTLSConn.BuildHandshakeState()
+		if err != nil {
+			return
 		}
+		var rawClientHello = uTLSConn.HandshakeState.Hello.Raw
+		var recordHeader = []byte{0x16, 0x03, 0x01}
+		var recordHeaderBytes = make([]byte, 2)
+		var clientHelloUInt16 = uint16(len(rawClientHello))
+		binary.BigEndian.PutUint16(recordHeaderBytes, clientHelloUInt16)
+		var fullClientHello = append(recordHeader, recordHeaderBytes...)
+		fullClientHello = append(fullClientHello, rawClientHello...) // append record header + ClientHello size to payload
 
+		err = runClientHelloTrace(
+			firstSourceMac,
+			outgoingIp,
+			firstTargetMac,
+			targetIp,
+			firstAckTcpPacket.DstPort,
+			firstAckTcpPacket.Ack,
+			firstAckTcpPacket.Seq+1,
+			livePacketSource,
+			maxTtlByte,
+			*disableIpPtrLookup,
+			*timeoutSeconds,
+			fullClientHello,
+			int(*port))
+	case "syn":
+		fmt.Println("Running in TCP syn mode")
 		if targetConn != nil {
 			_ = targetConn.Close()
 
@@ -171,22 +241,8 @@ func main() {
 			livePacketSource,
 			maxTtlByte,
 			*disableIpPtrLookup,
-			*timeoutSeconds)
-	} else {
-		fmt.Printf("* TCP connection established. Performing HTTP GET traceroute.\n")
-		err = runHttpGetTrace(
-			firstSourceMac,
-			outgoingIp,
-			firstTargetMac,
-			targetIp,
-			encodedDomain,
-			firstAckTcpPacket.DstPort,
-			firstAckTcpPacket.Ack,
-			firstAckTcpPacket.Seq+1,
-			livePacketSource,
-			maxTtlByte,
-			*disableIpPtrLookup,
-			*timeoutSeconds)
+			*timeoutSeconds,
+			int(*port))
 	}
 
 	if err != nil {
@@ -197,36 +253,7 @@ func main() {
 	fmt.Printf("* Probe complete.\n")
 }
 
-func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAddr, error) {
-	initialConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: targetIp.IP, Port: 80})
-	if err != nil {
-		return "", nil, err
-	}
-
-	localInterfaceIp := initialConn.LocalAddr().(*net.UDPAddr).IP
-	_ = initialConn.Close()
-
-	outgoingPcapInterfaceName, err := FindPcapInterfaceName(localInterfaceIp)
-	if err != nil {
-		return "", nil, err
-	}
-	if outgoingPcapInterfaceName == "" {
-		return "", nil, errors.New(
-			fmt.Sprintf("Unable to lookup the outgoing interface for local IP: %s", localInterfaceIp))
-	}
-
-	_, localNet, _ := net.ParseCIDR("127.0.0.0/8")
-	if localNet.Contains(localInterfaceIp) {
-		return "", nil, errors.New(
-			"Outgoing interface is local. Either the destination is the local machine or a" +
-				" local proxy is being used.\nPlease choose a remote destination or exclude this app from being" +
-				" proxied and try again.")
-	}
-
-	return outgoingPcapInterfaceName, &net.IPAddr{IP: localInterfaceIp}, nil
-}
-
-func startPacketCapture(outgoingInterfaceName string, targetIp *net.IPAddr) (pcapSource *LivePacketSource, err error) {
+func startPacketCapture(outgoingInterfaceName string, targetIp *net.IPAddr, port uint) (pcapSource *LivePacketSource, err error) {
 	liveHandle, err := pcap.OpenLive(outgoingInterfaceName, 65535, true, pcap.BlockForever)
 	if err != nil {
 		return nil, err
@@ -237,12 +264,15 @@ func startPacketCapture(outgoingInterfaceName string, targetIp *net.IPAddr) (pca
 	targetIpHex := hex.EncodeToString(targetIpInt.Bytes())
 
 	captureFilter := fmt.Sprintf(
-		"(tcp and dst %s and dst port 80 and tcp[tcpflags] & tcp-syn == tcp-syn) or"+
-			" (tcp and src %s and port 80 and (tcp[tcpflags] & (tcp-ack|tcp-rst|tcp-fin) != 0)) or"+
-			" (icmp[icmptype] == icmp-timxceed and icmp[17] == 6 and icmp[24:4] == 0x%s and icmp[30:2] == 80)",
+		"(tcp and dst %s and dst port %d and tcp[tcpflags] & tcp-syn == tcp-syn) or"+
+			" (tcp and src %s and port %d and (tcp[tcpflags] & (tcp-ack|tcp-rst|tcp-fin) != 0)) or"+
+			" (icmp[icmptype] == icmp-timxceed and icmp[17] == 6 and icmp[24:4] == 0x%s and icmp[30:2] == %d)",
 		targetIp.String(),
+		port,
 		targetIp.String(),
-		targetIpHex)
+		port,
+		targetIpHex,
+		port)
 
 	if err := liveHandle.SetBPFFilter(captureFilter); err != nil {
 		liveHandle.Close()
@@ -276,7 +306,8 @@ func runHttpGetTrace(
 	livePacketSource *LivePacketSource,
 	maxTtl uint8,
 	disableIpPtrLookup bool,
-	timeoutSeconds uint) error {
+	timeoutSeconds uint,
+	port int) error {
 
 	return runTrace(
 		tcpAckNumber,
@@ -300,7 +331,7 @@ func runHttpGetTrace(
 			}
 			transportLayer := layers.TCP{
 				SrcPort: sourcePort,
-				DstPort: layers.TCPPort(80),
+				DstPort: layers.TCPPort(port),
 				Seq:     tcpSeqNumber,
 				Ack:     tcpAckNumber,
 				Window:  1450,
@@ -319,6 +350,61 @@ func runHttpGetTrace(
 		timeoutSeconds)
 }
 
+func runClientHelloTrace(
+	sourceMac *net.HardwareAddr,
+	sourceIp *net.IPAddr,
+	targetMac *net.HardwareAddr,
+	targetIp *net.IPAddr,
+	sourcePort layers.TCPPort,
+	tcpSeqNumber uint32,
+	tcpAckNumber uint32,
+	livePacketSource *LivePacketSource,
+	maxTtl uint8,
+	disableIpPtrLookup bool,
+	timeoutSeconds uint,
+	rawClientHello []byte,
+	port int) error {
+
+	return runTrace(
+		tcpAckNumber,
+		func(handle *pcap.Handle, ttl uint8) error {
+			var linkLayer gopacket.SerializableLayer = nil
+			if sourceMac != nil && targetMac != nil {
+				linkLayer = &layers.Ethernet{
+					SrcMAC:       *sourceMac,
+					DstMAC:       *targetMac,
+					EthernetType: layers.EthernetTypeIPv4,
+				}
+			}
+			networkLayer := layers.IPv4{
+				Version:  4,
+				Id:       uint16(rand.Uint32()),
+				Flags:    layers.IPv4DontFragment,
+				TTL:      ttl,
+				Protocol: layers.IPProtocolTCP,
+				SrcIP:    sourceIp.IP,
+				DstIP:    targetIp.IP,
+			}
+			transportLayer := layers.TCP{
+				SrcPort: sourcePort,
+				DstPort: layers.TCPPort(port),
+				Seq:     tcpSeqNumber,
+				Ack:     tcpAckNumber,
+				Window:  1450,
+				ACK:     true,
+				PSH:     true,
+			}
+			if err := sendRawPacket(handle, linkLayer, networkLayer, transportLayer, rawClientHello); err != nil {
+				return err
+			}
+			return nil
+		},
+		livePacketSource,
+		maxTtl,
+		disableIpPtrLookup,
+		timeoutSeconds)
+}
+
 func runTcpSynTrace(
 	sourceMac *net.HardwareAddr,
 	sourceIp *net.IPAddr,
@@ -327,7 +413,8 @@ func runTcpSynTrace(
 	livePacketSource *LivePacketSource,
 	maxTtl uint8,
 	disableIpPtrLookup bool,
-	timeoutSeconds uint) error {
+	timeoutSeconds uint,
+	port int) error {
 	return runTrace(
 		0,
 		func(handle *pcap.Handle, ttl uint8) error {
@@ -350,7 +437,7 @@ func runTcpSynTrace(
 			}
 			transportLayer := layers.TCP{
 				SrcPort: layers.TCPPort(uint16(rand.Uint32())),
-				DstPort: layers.TCPPort(80),
+				DstPort: layers.TCPPort(port),
 				Seq:     rand.Uint32(),
 				Ack:     0,
 				Window:  1450,
@@ -498,7 +585,7 @@ func sendRawPacket(
 		return nil
 	}
 
-	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String())
+	conn, err := net.Dial("ip4:tcp", networkLayer.DstIP.String()+":"+fmt.Sprintf("%d", transportLayer.DstPort))
 	if err != nil {
 		return err
 	}
