@@ -27,6 +27,7 @@ func main() {
 	disableIpPtrLookup := flag.Bool("n", false, "Disable IP PTR lookup.")
 	timeoutSeconds := flag.Uint("t", 15, "Timeout for each hop.")
 	port := flag.Uint("port", 0, "Port number.")
+	serverName := flag.String("host", "", "SNI in ClientHello packet or Host header in HTTP request")
 	flag.Parse()
 
 	switch *connectionMode {
@@ -61,6 +62,16 @@ func main() {
 	encodedDomain, err := idna.ToASCII(domain)
 	if err != nil {
 		fmt.Printf("Unable to ascii encode the given domain: %s", err)
+		os.Exit(1)
+	}
+
+	if *serverName == "" {
+		*serverName = encodedDomain
+	} else {
+		*serverName, err = idna.ToASCII(*serverName)
+	}
+	if err != nil {
+		fmt.Printf("Unable to ascii encode the given host: %s", err)
 		os.Exit(1)
 	}
 
@@ -172,7 +183,7 @@ func main() {
 			outgoingIp,
 			firstTargetMac,
 			targetIp,
-			encodedDomain,
+			*serverName,
 			firstAckTcpPacket.DstPort,
 			firstAckTcpPacket.Ack,
 			firstAckTcpPacket.Seq+1,
@@ -185,7 +196,7 @@ func main() {
 		fmt.Println("Running in HTTPS ClientHello mode")
 		// use uTLS library to create a google chrome fingerprinted ClientHello using empty connection
 		var conn net.Conn = nil
-		uTLSConn := tls.UClient(conn, &tls.Config{ServerName: domain}, tls.HelloChrome_Auto)
+		uTLSConn := tls.UClient(conn, &tls.Config{ServerName: *serverName}, tls.HelloChrome_Auto)
 		var err = uTLSConn.BuildHandshakeState()
 		if err != nil {
 			return
