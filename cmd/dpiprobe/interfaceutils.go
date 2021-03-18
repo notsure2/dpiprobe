@@ -8,6 +8,7 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
+// FindPcapInterfaceName Finds interface name for packet capture using an IP address
 func FindPcapInterfaceName(ipAddress net.IP) (string, error) {
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
@@ -27,6 +28,7 @@ func FindPcapInterfaceName(ipAddress net.IP) (string, error) {
 	return "", nil
 }
 
+// findOutgoingPcapInterfaceNameAndIp Finds outgoing interface name and IP for packet capture
 func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAddr, error) {
 	initialConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: targetIp.IP, Port: 443})
 	if err != nil {
@@ -41,8 +43,7 @@ func findOutgoingPcapInterfaceNameAndIp(targetIp *net.IPAddr) (string, *net.IPAd
 		return "", nil, err
 	}
 	if outgoingPcapInterfaceName == "" {
-		return "", nil, errors.New(
-			fmt.Sprintf("Unable to lookup the outgoing interface for local IP: %s", localInterfaceIp))
+		return "", nil, fmt.Errorf("Unable to lookup the outgoing interface for local IP: %s", localInterfaceIp)
 	}
 
 	_, localNet, _ := net.ParseCIDR("127.0.0.0/8")
